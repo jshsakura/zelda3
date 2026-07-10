@@ -118,6 +118,13 @@ def print_images(args):
     all.append(bytes(ROM.get_bytes(tables.kCompBgPtrs[i], comp_len)))
   add_asset_packed('kBgGfx', all)
 
+# bit 0 (existing): EU/'new'-format command encoding (text_compression.uses_new_format)
+# bit 1 (existing): no US ROM match -- set for every non-US language
+# bit 2 (new): Korean encoding -- selects messaging.c's Text_DecodeCmd Korean
+#              branch. See ZELDA3_KO_PORT.md; 0x80..0x87 are unused/free in
+#              the US command encoding so this collides with nothing.
+kDialogueFlag_Korean = 4
+
 def print_dialogue(args):
   from text_compression import dialogue_filename, kLanguages
 
@@ -126,24 +133,54 @@ def print_dialogue(args):
     for a in args.languages.split(','):
       if a in languages or a not in kLanguages:
         raise Exception(f'Language {a} is not valid')
-      name = dialogue_filename(a)
-      if not os.path.exists(name):
-        raise Exception(f'{name} not found. You need to extract it with --extract-dialogue using the ROM of that language.')
+      if a != 'ko':
+        name = dialogue_filename(a)
+        if not os.path.exists(name):
+          raise Exception(f'{name} not found. You need to extract it with --extract-dialogue using the ROM of that language.')
       languages.append(a)
 
   all_langs, all_fonts, mappings = [], [], []
   for i, lang in enumerate(languages):
-    dict_packed = pack_arrays(text_compression.encode_dictionary(lang))
-    dialogue_packed = pack_arrays(compress_dialogue(dialogue_filename(lang), lang))
-    all_langs.append(pack_arrays([dict_packed, dialogue_packed]))
-    font_data, font_width = sprite_sheets.encode_font_from_png(lang)
-    all_fonts.append(pack_arrays([font_data, font_width]))
-    flags = text_compression.uses_new_format(lang)
-    if i != 0: flags |= 2 # no us rom match?
+    if lang == 'ko':
+      # Korean bypasses the generic compress_dialogue/encode_font_from_png
+      # pipeline entirely: backend/tools/z3k_gen_assets.py and
+      # z3k_gen_dialogue_397.py already produced final, ready-to-pack byte
+      # streams (own decoder, own font layout: 2048 tiles x 16B + a
+      # 1024-entry width table, vs. every other language's 256-glyph PNG
+      # font). No dictionary is shipped -- the Korean stream never emits a
+      # byte >= kTextDictBase (0x88).
+      dict_packed = pack_arrays([])
+      dialogue_packed = read_generated_asset('dialogue_ko_397.bin')
+      all_langs.append(pack_arrays([dict_packed, dialogue_packed]))
+      font_data = read_generated_asset('font_ko.bin')
+      font_width = read_generated_asset('widths_ko.bin')
+      all_fonts.append(pack_arrays([font_data, font_width]))
+      flags = kDialogueFlag_Korean
+      if i != 0: flags |= 2
+    else:
+      dict_packed = pack_arrays(text_compression.encode_dictionary(lang))
+      dialogue_packed = pack_arrays(compress_dialogue(dialogue_filename(lang), lang))
+      all_langs.append(pack_arrays([dict_packed, dialogue_packed]))
+      font_data, font_width = sprite_sheets.encode_font_from_png(lang)
+      all_fonts.append(pack_arrays([font_data, font_width]))
+      flags = text_compression.uses_new_format(lang)
+      if i != 0: flags |= 2 # no us rom match?
     mappings.append(pack_arrays([lang.encode('utf8'), bytearray([i, i, flags])]))
   add_asset_packed('kDialogue', all_langs)
   add_asset_packed('kDialogueFont', all_fonts)
   add_asset_packed('kDialogueMap', mappings)
+
+def read_generated_asset(filename):
+  # font_ko.bin / widths_ko.bin / dialogue_ko_397.bin are produced by
+  # backend/tools/z3k_gen_assets.py + z3k_gen_dialogue_397.py (outside this
+  # repo) and expected to be dropped into tables/ alongside the other
+  # extracted *.txt/*.png resources before running restool.py.
+  path = filename
+  if not os.path.exists(path):
+    raise Exception(f'{path} not found. Generate it with backend/tools/z3k_gen_assets.py '
+                     f'and z3k_gen_dialogue_397.py and copy it into tables/.')
+  with open(path, 'rb') as f:
+    return f.read()
 
 def print_misc(args):
   add_asset_uint8('kOverworldMapGfx', ROM.get_bytes(0x18c000, 0x4000))

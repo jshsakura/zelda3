@@ -2207,6 +2207,33 @@ enum {
 #define TEXTCMD_MK(c, x, m) ((c) << 6 | (x) << 1 | (m))
 
 uint32 Text_DecodeCmd(uint8 a, const uint8 *src) {
+  if (g_zenv.dialogue_flags & 4) {
+    // Korean encoding. Letters < 0x67 are literal type-0 (kana/JP-font)
+    // glyphs; 0x67..0x7F is the same US command range every other language
+    // shares. Korean syllables and any type-0 glyph >= 0x67 (digits,
+    // latin, punctuation -- anything that would collide with the command
+    // or dictionary range) are escaped as a 2-byte sequence: 0x80/0x81/0x82
+    // select font type 1/2/3 (Korean syllables), 0x83 selects type 0.
+    if (a < kTextCommandStart_US)
+      return TEXTCMD_MK(a, kTextCmd_IsLetter, 0);
+    if (a <= 0x7F) {
+      static const uint8 kText_CommandLengths_US[] = { 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0 };
+      if (kText_CommandLengths_US[a - kTextCommandStart_US])
+        return TEXTCMD_MK(*src, a - kTextCommandStart_US, 1);
+      else
+        return TEXTCMD_MK(0, a - kTextCommandStart_US, 0);
+    }
+    if (a == 0x80) return TEXTCMD_MK(0x100 | *src, kTextCmd_IsLetter, 1);
+    if (a == 0x81) return TEXTCMD_MK(0x200 | *src, kTextCmd_IsLetter, 1);
+    if (a == 0x82) return TEXTCMD_MK(0x300 | *src, kTextCmd_IsLetter, 1);
+    if (a == 0x83) return TEXTCMD_MK(0x000 | *src, kTextCmd_IsLetter, 1);
+    // 0x84..0x87 are reserved/unused, and a dialogue byte is never >= 0x88
+    // (kTextDictBase) here -- dictionary references are already expanded
+    // by Text_LoadCharacterBuffer before Text_DecodeCmd ever sees them,
+    // and the Korean dictionary ships empty. Fall back the same safe way
+    // the US branch below does for out-of-range input.
+    return TEXTCMD_MK(26, kTextCmd_IsLetter, 0);
+  }
   if ((g_zenv.dialogue_flags & 1) == 0) {
     // US encoding
     if (a < kTextCommandStart_US)
@@ -2290,7 +2317,15 @@ void Text_LoadCharacterBuffer() {  // 8ec4e2
     case kTextCmd_Number: {  // Text_WritePreloadedNumber
       uint8 t = TEXTCMD_PARAM(cmd);
       uint8 v = dialogue_number[t >> 1];
-      *dst++ = 0x34 + ((t & 1) ? v >> 4 : v & 0xf);
+      uint8 digit = (t & 1) ? v >> 4 : v & 0xf;
+      if (g_zenv.dialogue_flags & 4) {
+        // Korean font: digits live at 0xA0, not 0x34 (which is kana え in
+        // the Korean/JP type-0 font), so escape it as a type-0 glyph.
+        *dst++ = 0x83;
+        *dst++ = 0xA0 + digit;
+      } else {
+        *dst++ = 0x34 + digit;
+      }
       break;
     }
     case kTextCmd_Position:
@@ -2315,15 +2350,32 @@ void Text_LoadCharacterBuffer() {  // 8ec4e2
 uint8 *Text_WritePlayerName(uint8 *p) {  // 8ec5b3
   uint8 slot = srm_var1;
   int offs = ((slot>>1) - 1) * 0x500;
+  uint8 raw[6];
   for (int i = 0; i < 6; i++) {
     uint8 *pp = &g_zenv.sram[0x3d9 + offs + i * 2];
     uint16 a = WORD(*pp);
-    p[i] = Text_FilterPlayerNameCharacters(a & 0xf | (a >> 1) & 0xf0);
+    raw[i] = Text_FilterPlayerNameCharacters(a & 0xf | (a >> 1) & 0xf0);
   }
-  int i = 6;
-  while (i && p[i - 1] == 0x59)
-    i--;
-  return p + i;
+  int n = 6;
+  while (n && raw[n - 1] == 0x59)  // 0x59 is the US font's space glyph, used as filler
+    n--;
+  if (g_zenv.dialogue_flags & 4) {
+    // Korean font: raw[] is a US-font glyph index (kTextAlphabet_US order:
+    // 0-25 = A-Z, 52-61 = 0-9), which doesn't line up with the Korean
+    // font's layout (A-Z at 0xAA, digits at 0xA0). Remap the common cases
+    // and escape via 0x83; anything else (lowercase/symbols, which the
+    // in-game name entry screen doesn't produce) falls back to a blank
+    // space glyph rather than risk an unrelated/garbage character.
+    for (int i = 0; i < n; i++) {
+      uint8 v = raw[i];
+      uint8 glyph = (v < 26) ? 0xAA + v : (v >= 52 && v < 62) ? 0xA0 + (v - 52) : 0xFF;
+      *p++ = 0x83;
+      *p++ = glyph;
+    }
+    return p;
+  }
+  memcpy(p, raw, n);
+  return p + n;
 }
 
 uint8 Text_FilterPlayerNameCharacters(uint8 a) {  // 8ec639
@@ -2536,7 +2588,11 @@ void VWF_RenderSingle(int c) {  // 8ecab8
   int i = vwf_var1++;
   uint8 arrval = vwf_arr[i];
   vwf_arr[i + 1] = arrval + width;
-  uint16 r10 = (c & 0x70) * 2 + (c & 0xf);
+  // (c & ~0xF) * 2 + (c & 0xF) is identical to (c & 0x70) * 2 + (c & 0xf) for
+  // c < 0x80 (bit 7 is 0, so &~0xF and &0x70 keep the same bits); widened so
+  // Korean multibyte glyph indices (c up to 0x3FF) also index correctly into
+  // the 2048-tile font.
+  uint16 r10 = (c & ~0xF) * 2 + (c & 0xF);
   uint16 r0 = arrval * 2;
   const uint16 *src2 = (uint16*)(kFontData + r10 * 16);
   uint8 *mbuf = (uint8 *)messaging_buf;

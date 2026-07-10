@@ -157,6 +157,13 @@ kFontTypes = {
   'redux': (0x8e8000, 256, 'font_redux.png', (0x8ECADF, 99)),
   'nl': (0x8e8000, 256, 'font_nl.png', (0x8ECADF, 99)),
   'sv': (0x8e8000, 256, 'font_sv.png', (0x8ECADF, 99)),
+  # 'ko' intentionally has no real entry here: its font is 2048 tiles x 16
+  # bytes (32768 B, indexed by the widened r10 = (c&~0xF)*2+(c&0xF) formula)
+  # with a 1024-entry width table, not the 256-glyph/16-byte-per-glyph PNG
+  # layout every other language uses -- it doesn't fit this tuple format at
+  # all. compile_resources.py's print_dialogue() special-cases lang == 'ko'
+  # and reads font_ko.bin/widths_ko.bin directly instead of calling
+  # encode_font_from_png(), so this key is never looked up.
 }
 
 def decode_font():

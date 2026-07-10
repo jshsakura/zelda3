@@ -388,6 +388,30 @@ class LangFR_C(LangEU):
   dictionary = kTextDictionary_FR
   rom_addrs = [0x9c8000, 0x8CF150]
 
+# Korean (ZELDA3_K_171101.ips over the Japanese ROM). Unlike every other
+# language here, 'ko' does NOT go through compress_strings/compress_dialogue
+# or encode_font_from_png -- backend/tools/z3k_gen_assets.py and
+# z3k_gen_dialogue_397.py already produce final, ready-to-pack byte streams
+# (dialogue_ko_397.bin/font_ko.bin/widths_ko.bin) straight from the ROM+IPS,
+# using their own decoder (JP control codes, not the US/EU 'org'/'new'
+# encoders below). This class exists only so 'ko' is a recognized language
+# name (print_dialogue's validation, uses_new_format()); none of its
+# alphabet/dictionary/rom_addrs/encoder fields are actually read for 'ko'.
+class LangKO:
+  alphabet = []
+  dictionary = []
+  command_lengths = kText_CommandLengths_US
+  command_names = kText_CommandNames_US
+  rom_addrs = []
+  COMMAND_START = 0x67
+  SWITCH_BANK = 0x80
+  FINISH = 0xff
+  DICT_BASE_ENC, DICT_BASE_DEC = 0x88, 0x88
+  ESCAPE_CHARACTER = None
+  encoder = 'ko'  # not 'org' or 'new' -- print_dialogue special-cases 'ko'
+                  # entirely and never calls compress_dialogue/uses this value
+                  # for anything besides uses_new_format() returning False.
+
 kLanguages = {
   'us' : LangUS(),
   'de' : LangDE(),
@@ -400,6 +424,7 @@ kLanguages = {
   'redux' : LangUS(),
   'nl' : LangNL(),
   'sv' : LangSV(),
+  'ko' : LangKO(),
 }
 
 def dialogue_filename(s):
