@@ -2582,14 +2582,8 @@ void VWF_RenderSingle(int c) {  // 8ecab8
   const uint8 *kFontData = FindIndexInMemblk(g_zenv.dialogue_font_blk, 0).ptr;
   uint8 width = FindIndexInMemblk(g_zenv.dialogue_font_blk, 1).ptr[c];
 //  assert(width <= 8);
-  // The Korean font is fixed-width 9 (an 8px glyph + a 1px inter-character gap);
-  // its whole-syllable glyphs fill the cell, so an 8px advance leaves no gap and
-  // reads as cramped. Let Korean advance up to 16 (a glyph can span two 8px
-  // tiles — the VWF already handles the crossing). Other languages keep the
-  // original 8px cap, a crash guard for a mid-message language switch.
-  uint8 width_cap = (g_zenv.dialogue_flags & 4) ? 16 : 8;
-  if (width > width_cap)
-    width = width_cap;
+  if (width > 8) // It could happen if changing language while showing a message
+    width = 8;   // This is a workaround to avoid crashing
 
   int i = vwf_var1++;
   uint8 arrval = vwf_arr[i];
