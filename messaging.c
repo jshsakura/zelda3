@@ -2572,6 +2572,27 @@ void RenderText_Draw_Finish() {  // 8eca35
   main_module_index = saved_module_for_menu;
 }
 
+// KO VWF debug instrumentation (temporary, debug build only): record what the
+// device actually feeds the renderer — dialogue_flags, glyph index, applied
+// width — for the first 32 glyphs, then dump both to SD once. Also dump the
+// raw render buffer so the on-device pixels can be diffed against the host
+// harness byte for byte.
+#include <stdio.h>
+static char kovwf_log[4096];
+static int kovwf_len, kovwf_n;
+static void KoVwf_Log(int c, int width) {
+  if (kovwf_n > 32) return;
+  if (kovwf_n < 32)
+    kovwf_len += snprintf(kovwf_log + kovwf_len, sizeof(kovwf_log) - (size_t)kovwf_len,
+        "n=%02d flags=0x%02x c=0x%03x w=%d\n", kovwf_n, g_zenv.dialogue_flags, c, width);
+  if (++kovwf_n == 32) {
+    FILE *f = fopen("/zelda3_vwf.log", "wb");
+    if (f) { fwrite(kovwf_log, 1, (size_t)kovwf_len, f); fclose(f); }
+    f = fopen("/zelda3_buf.bin", "wb");
+    if (f) { fwrite((const uint8 *)messaging_buf, 1, 0x7e0, f); fclose(f); }
+  }
+}
+
 void VWF_RenderSingle(int c) {  // 8ecab8
   if (c != 0x59)
     sound_effect_2 = 12;
@@ -2597,6 +2618,7 @@ void VWF_RenderSingle(int c) {  // 8ecab8
   }
   if (width > width_cap) // It could happen if changing language while showing a message
     width = width_cap;   // This is a workaround to avoid crashing
+  KoVwf_Log(c, width);
 
   int i = vwf_var1++;
   uint8 arrval = vwf_arr[i];
