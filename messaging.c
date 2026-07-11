@@ -107,6 +107,10 @@ static const uint8 kText_CommandLengths[25] = {
   1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1,
   2, 2, 2, 2, 1, 1, 1, 1, 1,
 };
+// Extra pixels inserted after every Korean syllable (see VWF_RenderSingle).
+// The widest Korean line is 136px with this at 2, well inside the 168px window.
+#define KOREAN_LETTER_SPACING 2
+
 static const uint8 kVWF_RenderCharacter_setMasks[8] = {0x80, 0x40, 0x20, 0x10, 8, 4, 2, 1};
 static const uint16 kVWF_RenderCharacter_renderPos[3] = {0, 0x2a0, 0x540};
 static const uint16 kVWF_RenderCharacter_linePositions[3] = {0, 0x40, 0x80};
@@ -2581,9 +2585,18 @@ void VWF_RenderSingle(int c) {  // 8ecab8
   
   const uint8 *kFontData = FindIndexInMemblk(g_zenv.dialogue_font_blk, 0).ptr;
   uint8 width = FindIndexInMemblk(g_zenv.dialogue_font_blk, 1).ptr[c];
+  uint8 width_cap = 8;
 //  assert(width <= 8);
-  if (width > 8) // It could happen if changing language while showing a message
-    width = 8;   // This is a workaround to avoid crashing
+  // Korean syllables (glyph index >= 0x100) are whole-block glyphs that ink the
+  // full 8px cell, so at width 8 they butt straight into the next one. Advance
+  // by 8 + KOREAN_LETTER_SPACING instead; the render loop shifts the glyph out
+  // after 8 columns and blanks the rest, giving a clean gap.
+  if ((g_zenv.dialogue_flags & 4) && c >= 0x100) {
+    width = 8 + KOREAN_LETTER_SPACING;
+    width_cap = 16;
+  }
+  if (width > width_cap) // It could happen if changing language while showing a message
+    width = width_cap;   // This is a workaround to avoid crashing
 
   int i = vwf_var1++;
   uint8 arrval = vwf_arr[i];
