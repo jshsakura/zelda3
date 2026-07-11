@@ -107,10 +107,6 @@ static const uint8 kText_CommandLengths[25] = {
   1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1,
   2, 2, 2, 2, 1, 1, 1, 1, 1,
 };
-// Extra pixels inserted after every Korean syllable (see VWF_RenderSingle).
-// The widest Korean line is 136px with this at 2, well inside the 168px window.
-#define KOREAN_LETTER_SPACING 2
-
 static const uint8 kVWF_RenderCharacter_setMasks[8] = {0x80, 0x40, 0x20, 0x10, 8, 4, 2, 1};
 static const uint16 kVWF_RenderCharacter_renderPos[3] = {0, 0x2a0, 0x540};
 static const uint16 kVWF_RenderCharacter_linePositions[3] = {0, 0x40, 0x80};
@@ -2572,6 +2568,38 @@ void RenderText_Draw_Finish() {  // 8eca35
   main_module_index = saved_module_for_menu;
 }
 
+// Draw one 8x8-tile-wide strip of a glyph cell: `cols` pixel columns of the
+// tile at `tile_index`, at pixel position `px` of the line whose buffer base
+// is `y_base` (vwf_line_ptr for the top half, +0x150 for the bottom). This is
+// the body of the original VWF_RenderSingle loop, factored out so a 16px-wide
+// Korean cell can render its right tile pair as a second strip.
+static void VWF_DrawCellHalf(const uint8 *kFontData, uint16 tile_index, uint16 y_base, uint8 px, uint8 cols) {
+  const uint16 *src = (uint16 *)(kFontData + tile_index * 16);
+  uint8 *mbuf = (uint8 *)messaging_buf;
+  uint16 r0 = px * 2;
+  for (int i = 0; i != 16; i += 2) {
+    uint16 r4 = *src++;
+    int y = r0 + y_base;
+    int x = (y & 0xff0) + i;
+    y = (y >> 1) & 7;
+    uint8 r3 = cols;
+    do {
+      if (r4 & 0x0080)
+        mbuf[x + 0] ^= kVWF_RenderCharacter_setMasks[y];
+      else
+        mbuf[x + 0] &= ~kVWF_RenderCharacter_setMasks[y];
+      if (r4 & 0x8000)
+        mbuf[x + 1] ^= kVWF_RenderCharacter_setMasks[y];
+      else
+        mbuf[x + 1] &= ~kVWF_RenderCharacter_setMasks[y];
+      r4 = (r4 & ~0x8080) << 1;
+    } while (--r3 && ++y != 8);
+    x += 16;
+    if (r4 != 0)
+      WORD(mbuf[x + 0]) = r4;
+  }
+}
+
 void VWF_RenderSingle(int c) {  // 8ecab8
   if (c != 0x59)
     sound_effect_2 = 12;
@@ -2585,18 +2613,14 @@ void VWF_RenderSingle(int c) {  // 8ecab8
   
   const uint8 *kFontData = FindIndexInMemblk(g_zenv.dialogue_font_blk, 0).ptr;
   uint8 width = FindIndexInMemblk(g_zenv.dialogue_font_blk, 1).ptr[c];
-  uint8 width_cap = 8;
-//  assert(width <= 8);
-  // Korean syllables (glyph index >= 0x100) are whole-block glyphs that ink the
-  // full 8px cell, so at width 8 they butt straight into the next one. Advance
-  // by 8 + KOREAN_LETTER_SPACING instead; the render loop shifts the glyph out
-  // after 8 columns and blanks the rest, giving a clean gap.
-  if ((g_zenv.dialogue_flags & 4) && c >= 0x100) {
-    width = 8 + KOREAN_LETTER_SPACING;
-    width_cap = 16;
-  }
-  if (width > width_cap) // It could happen if changing language while showing a message
-    width = width_cap;   // This is a workaround to avoid crashing
+  // Korean glyphs are 16x16 cells (left tile pair + right tile pair, the right
+  // sheet at tile offset 0x800) with real ink widths of 9-11px; their advance
+  // comes from the width table (ink + 1px gap). Everything else stays a plain
+  // 8px cell, and the classic 8px clamp still guards a language switched mid-
+  // message.
+  uint8 width_cap = ((g_zenv.dialogue_flags & 4) && c >= 0x100) ? 16 : 8;
+  if (width > width_cap)
+    width = width_cap;
 
   int i = vwf_var1++;
   uint8 arrval = vwf_arr[i];
@@ -2604,56 +2628,14 @@ void VWF_RenderSingle(int c) {  // 8ecab8
   // (c & ~0xF) * 2 + (c & 0xF) is identical to (c & 0x70) * 2 + (c & 0xf) for
   // c < 0x80 (bit 7 is 0, so &~0xF and &0x70 keep the same bits); widened so
   // Korean multibyte glyph indices (c up to 0x3FF) also index correctly into
-  // the 2048-tile font.
+  // the 2048-tile left-half sheet.
   uint16 r10 = (c & ~0xF) * 2 + (c & 0xF);
-  uint16 r0 = arrval * 2;
-  const uint16 *src2 = (uint16*)(kFontData + r10 * 16);
-  uint8 *mbuf = (uint8 *)messaging_buf;
-  for (int i = 0; i != 16; i += 2) {
-    uint16 r4 = *src2++;
-    int y = r0 + vwf_line_ptr;
-    int x = (y & 0xff0) + i;
-    y = (y >> 1) & 7;
-    uint8 r3 = width;
-    do {
-      if (r4 & 0x0080)
-        mbuf[x + 0] ^= kVWF_RenderCharacter_setMasks[y];
-      else
-        mbuf[x + 0] &= ~kVWF_RenderCharacter_setMasks[y];
-      if (r4 & 0x8000)
-        mbuf[x + 1] ^= kVWF_RenderCharacter_setMasks[y];
-      else
-        mbuf[x + 1] &= ~kVWF_RenderCharacter_setMasks[y];
-      r4 = (r4 & ~0x8080) << 1;
-      //r4 <<= 1;
-    } while (--r3 && ++y != 8);
-    x += 16;
-    if (r4 != 0)
-      WORD(mbuf[x + 0]) = r4;
-  }
-  uint16 r8 = vwf_line_ptr + 0x150;
-  const uint16 *src3 = (uint16*)(kFontData + (r10 + 16) * 16);
-  for (int i = 0; i != 16; i += 2) {
-    uint16 r4 = *src3++;
-    int y = r8 + r0;
-    int x = (y & 0xff0) + i;
-    y = (y >> 1) & 7;
-    uint8 r3 = width;
-    do {
-      if (r4 & 0x0080)
-        mbuf[x + 0] ^= kVWF_RenderCharacter_setMasks[y];
-      else
-        mbuf[x + 0] &= ~kVWF_RenderCharacter_setMasks[y];
-      if (r4 & 0x8000)
-        mbuf[x + 1] ^= kVWF_RenderCharacter_setMasks[y];
-      else
-        mbuf[x + 1] &= ~kVWF_RenderCharacter_setMasks[y];
-      //r4 <<= 1;
-      r4 = (r4 & ~0x8080) << 1;
-    } while (--r3 && ++y != 8);
-    x += 16;
-    if (r4 != 0)
-      WORD(mbuf[x + 0]) = r4;
+  uint8 left_cols = width > 8 ? 8 : width;
+  VWF_DrawCellHalf(kFontData, r10, vwf_line_ptr, arrval, left_cols);
+  VWF_DrawCellHalf(kFontData, r10 + 16, vwf_line_ptr + 0x150, arrval, left_cols);
+  if (width > 8) {
+    VWF_DrawCellHalf(kFontData, r10 + 0x800, vwf_line_ptr, arrval + 8, width - 8);
+    VWF_DrawCellHalf(kFontData, r10 + 0x810, vwf_line_ptr + 0x150, arrval + 8, width - 8);
   }
 }
 
